@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Template para configurar VPC, Subredes, Grupos de Seguridad y EC2 para Prometheus, Node Exporter y Grafana."
+
+Resources:
+  # 1. Creación de VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "172.16.0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC_GRAFANA
+
+  # 2. Creación de subred para la VPC (subnet pública)
+  SubRedPublica:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "172.16.0.0/24"
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: true  # Asigna IP pública automáticamente a las instancias
+      Tags:
+        - Key: Name
+          Value: SubRed_Grafana
+
+  # 3. Creación del grupo de seguridad Prometheus
+  GSPrometheus:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Grupo de seguridad para Prometheus"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow SSH"
+        - IpProtocol: "tcp"
+          FromPort: "9090"
+          ToPort: "9090"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow Prometheus metrics"
+        - IpProtocol: "tcp"
+          FromPort: "9100"
+          ToPort: "9100"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow Node Exporter"
+      Tags:
+        - Key: Name
+          Value: GS-PROMETHEUS
+
+  # 4. Creación del grupo de seguridad Node Exporter
+  GSNExporter:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Grupo de seguridad para Node Exporter"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: "22"
+          ToPort: "22"
+          UserIdGroupPairs:
+            - GroupId: !Ref GSPrometheus
+              Description: "Allow SSH from Prometheus"
+        - IpProtocol: "tcp"
+          FromPort: "9100"
+          ToPort: "9100"
+          UserIdGroupPairs:
+            - GroupId: !Ref GSPrometheus
+              Description: "Allow Node Exporter traffic from Prometheus"
+      Tags:
+        - Key: Name
+          Value: GS-NEXPORTER
+
+  # 5. Creación del grupo de seguridad para Grafana
+  GSGrafana:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Grupo de seguridad para Grafana"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow SSH"
+        - IpProtocol: "tcp"
+          FromPort: "3000"
+          ToPort: "3000"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow Grafana HTTP"
+        - IpProtocol: "tcp"
+          FromPort: "9100"
+          ToPort: "9100"
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow Node Exporter"
+      Tags:
+        - Key: Name
+          Value: GS-GRAFANA
+
+  # 6. Creación de EC2 para Node Exporter
+  EC2NodeExporter:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: ami-04a81a99f5ec58529
+      SubnetId: !Ref SubRedPublica
+      SecurityGroupIds:
+        - !Ref GSNExporter
+      KeyName: vockey
+      Tags:
+        - Key: Name
+          Value: EC2-NodeExporter
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          cd /tmp
+          wget https://github.com/prometheus/node_exporter/releases/download/v1.6.1/node_exporter-1.6.1.linux-amd64.tar.gz
+          tar xvfz node_exporter-1.6.1.linux-amd64.tar.gz
+          sudo mv node_exporter-1.6.1.linux-amd64/node_exporter /usr/local/bin/
+          sudo useradd --no-create-home --shell /bin/false nodeusr
+          cat <<EOF | sudo tee /etc/systemd/system/node_exporter.service
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          User=nodeusr
+          ExecStart=/usr/local/bin/node_exporter
+
+          [Install]
+          WantedBy=default.target
+          EOF
+          sudo chown nodeusr:nodeusr /usr/local/bin/node_exporter
+          sudo systemctl daemon-reload
+          sudo systemctl start node_exporter
+          sudo systemctl enable node_exporter
+          echo "Node Exporter está corriendo y escuchando en el puerto 9100"
+
+  # 7. Creación de EC2 para Prometheus
+  EC2Prometheus:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: ami-04a81a99f5ec58529
+      SubnetId: !Ref SubRedPublica
+      SecurityGroupIds:
+        - !Ref GSPrometheus
+      KeyName: vockey
+      Tags:
+        - Key: Name
+          Value: EC2-Prometheus
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo useradd --no-create-home --shell /bin/false prometheus
+          sudo mkdir /etc/prometheus -y
+          sudo mkdir /var/lib/prometheus -y
+          sudo mkdir -p /etc/prometheus/consoles -y
+          sudo mkdir -p /etc/prometheus/console_libraries -y
+          cd /tmp
+          wget https://github.com/prometheus/prometheus/releases/download/v2.47.0/prometheus-2.47.0.linux-amd64.tar.gz
+          tar xvfz prometheus-2.47.0.linux-amd64.tar.gz
+          cd prometheus-2.47.0.linux-amd64
+          sudo mv prometheus /usr/local/bin/
+          sudo mv promtool /usr/local/bin/
+          sudo mv prometheus.yml /etc/prometheus/prometheus.yml
+          sudo mv consoles /etc/prometheus/consoles
+          sudo mv console_libraries /etc/prometheus/console_libraries
+          sudo chown -R prometheus:prometheus /etc/prometheus
+          sudo chown -R prometheus:prometheus /var/lib/prometheus
+          cat <<EOF | sudo tee /etc/prometheus/prometheus.yml
+          global:
+            scrape_interval: 15s
+          scrape_configs:
+            - job_name: 'node_exporter'
+              static_configs:
+                - targets: ['<PRIVATE_IP_NODE_EXPORTER>:9100']
+          EOF
+          sudo systemctl daemon-reload
+          sudo systemctl enable prometheus
+          sudo systemctl start prometheus
+          echo "Prometheus ha sido instalado y está monitoreando la IP: <PRIVATE_IP_NODE_EXPORTER>"
+
+  # 8. Creación de EC2 para Grafana
+  EC2Grafana:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      ImageId: ami-0ac4dfaf1c5c0cce9
+      SubnetId: !Ref SubRedPublica
+      SecurityGroupIds:
+        - !Ref GSGrafana
+      KeyName: vockey
+      Tags:
+        - Key: Name
+          Value: EC2-Grafana
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y wget
+          cat <<EOF | sudo tee /etc/yum.repos.d/grafana.repo
+          [grafana]
+          name=Grafana OSS
+          baseurl=https://packages.grafana.com/oss/rpm
+          repo_gpgcheck=1
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://packages.grafana.com/gpg.key
+          EOF
+          sudo yum install grafana -y
+          systemctl start grafana-server
+          systemctl enable grafana-server
+          sudo firewall-cmd --zone=public --add-port=3000/tcp --permanent
+          sudo firewall-cmd --reload
+
+Outputs:
+  EC2NodeExporterPublicIP:
+    Description: "IP pública de la instancia EC2 Node Exporter"
+    Value: !GetAtt EC2NodeExporter.PublicIp
+
+  EC2PrometheusPublicIP:
+    Description: "IP pública de la instancia EC2 Prometheus"
+    Value: !GetAtt EC2Prometheus.PublicIp
+
+  EC2GrafanaPublicIP:
+    Description: "IP pública de la instancia EC2 Grafana"
+    Value: !GetAtt EC2Grafana.PublicIp
