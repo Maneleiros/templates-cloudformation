@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Part 1 - Build a webapp stack with CloudFormation
+
+Parameters:
+  ALBPublico:
+    Description: Defines internet or intenal
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    ConstraintDescription: Use boolean value
+
+Conditions:
+  IsALBPublico:
+    Fn::Equals:
+      - !Ref ALBPublico
+      - true
+Resources:
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Scheme: !If [IsALBPublico, "internet-facing", "internal"]
+      AvailabilityZones:
+        - "us-east-2a"
+      CrossZone: true
+      Listeners:
+        - InstancePort: "80"
+          InstanceProtocol: HTTP
+          LoadBalancerPort: "443"
+          Protocol: HTTPS
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [vivalalandingzone, Manel]]

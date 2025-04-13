@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Plantilla de CloudFormation para implementar Prometheus y Grafana con Grafana recogiendo métricas de Prometheus
+
+Resources:
+
+  PrometheusInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0c94855ba95c71c99 # Cambiar según la región
+      KeyName: !Ref KeyPairName
+      SecurityGroups:
+        - !Ref PrometheusSecurityGroup
+      Tags:
+        - Key: Name
+          Value: Prometheus
+
+  GrafanaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0c94855ba95c71c99 # Cambiar según la región
+      KeyName: !Ref KeyPairName
+      SecurityGroups:
+        - !Ref GrafanaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: Grafana
+
+  PrometheusSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acceso para Prometheus
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          CidrIp: 0.0.0.0/0
+
+  GrafanaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acceso para Grafana
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          SourceSecurityGroupId: !Ref PrometheusSecurityGroup
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: GrafanaPrometheusKey
+
+Outputs:
+  PrometheusPublicIP:
+    Description: Dirección IP pública de Prometheus
+    Value: !GetAtt PrometheusInstance.PublicIp
+
+  GrafanaPublicIP:
+    Description: Dirección IP pública de Grafana
+    Value: !GetAtt GrafanaInstance.PublicIp
+

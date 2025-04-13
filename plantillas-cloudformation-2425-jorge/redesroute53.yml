@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Part 1 - Build a webapp stack with CloudFormation
+
+
+Resources:
+
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: vlc.mlf.com
+      VPCs:
+        - VPCId: !Ref MyVPC
+          VPCRegion: !Ref AWS::Region
+
+  Route53RecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: vlc.mlf.com
+      ResourceRecords:
+         - !GetAtt EC2InstanceWeb.PrivateIp
+      Type: A
+      TTL: '300'
+
+  Route53Recordalias:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: wwww.vlc.mlf.com
+      Type: A
+      AliasTarget:
+        DNSName: !Sub "s3-website-${AWS::Region}.amazonaws.com"
+        HostedZoneId: "Z3AQBSTGFYJSTF"
+        EvaluateTargetHealth: false
+
+
+
+  MyVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: 'Name'
+          Value: 'MyVPC'
+
+  EC2Instance:
+      Type: "AWS::EC2::Instance"
+      Properties:
+        InstanceType: "c5.large"
+        KeyName: "vockey"
+        ImageId: ami-04f77c9cd94746b09
+        SecurityGroupIds:
+          - !Ref MySecurityGroup
+        SubnetId: !Ref PublicSubnet1
+        Tags:
+          - Key: "Name"
+            Value: EC2-WindowsServer
+
+  EC2InstanceWeb:
+      Type: "AWS::EC2::Instance"
+      Properties:
+        InstanceType: "t2.micro"
+        KeyName: "vockey"
+        ImageId: ami-04b4f1a9cf54c11d0
+        SecurityGroupIds:
+          - !Ref MySecurityGroup
+        SubnetId: !Ref PublicSubnet1
+        Tags:
+          - Key: "Name"
+            Value: EC2-WebServer
+        UserData: !Base64 |
+          #!/bin/bash
+          apt update -y
+          apt install apache2 -y
+          systemctl start apache2
+          systemctl enable apache2
+          usermod -a -G www-data ubuntu
+          chown -R ubuntu:www-data /var/www/
+          chmod 775 /var/www
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+          apt install mariadb-server mariadb-client -y
+          systemctl start mariadb
+          systemctl enable mariadb
+          apt install php libapache2-mod-php php-mysql php-gd php-curl php-xml php-mbstring php-intl php-gmp php-bcmath php-imagick php-zip unzip -y
+          apt install nfs-common -y
+
+  InternetGateway:
+      Type: 'AWS::EC2::InternetGateway'
+      Properties:
+        Tags:
+          - Key: 'Name'
+            Value: 'InternetGateway'
+
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '10.0.0.0/24'
+      AvailabilityZone: 'us-east-1b'
+      MapPublicIpOnLaunch: true
+
+
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref MyVPC
+
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: 'AttachGateway'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  AssociateRouteTable1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  MySecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Permitir acceso SSH"
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "tcp"
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "tcp"
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: "0.0.0.0/0"
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: "wwww.vlc.mlf.com"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "VPCOnlyAccess"
+            Effect: "Allow"
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource:
+              - !Sub "arn:aws:s3:::wwww.vlc.mlf.com"
+              - !Sub "arn:aws:s3:::wwww.vlc.mlf.com/*"
+
+
+Outputs:
+  WebsiteURL:
+    Description: URL del sitio web alojado en S3
+    Value: !GetAtt S3Bucket.WebsiteURL
+  BucketNameOutput:
+    Description: Nombre del bucket S3 creado para el sitio web
+    Value: !Ref S3Bucket
